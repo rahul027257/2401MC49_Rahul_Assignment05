@@ -1,0 +1,79 @@
+diff --git a/user/prodcons.c b/user/prodcons.c
+new file mode 100644
+index 0000000..e869c1c
+--- /dev/null
++++ b/user/prodcons.c
+@@ -0,0 +1,73 @@
++#include "kernel/types.h"
++#include "user/user.h"
++
++#define BUFFER_SIZE 5
++#define NUM_ITEMS 20
++
++// CRITICAL: volatile prevents compiler optimization from caching values
++struct pc_shared {
++  volatile int buffer[BUFFER_SIZE];
++  volatile int in;
++  volatile int out;
++  volatile int count;
++  volatile int mutex; 
++};
++
++int main(int argc, char *argv[]) {
++  printf("prodcons: starting (buffer_size=%d, items=%d)\n", BUFFER_SIZE, NUM_ITEMS);
++  
++  struct pc_shared *s = (struct pc_shared *)shm_get();
++  if ((uint64)s == 0 || (uint64)s == 0xFFFFFFFFFFFFFFFF) {
++    printf("prodcons: failed to get shared memory\n");
++    exit(1);
++  }
++  
++  s->in = 0; s->out = 0; s->count = 0; s->mutex = 0;
++  
++  int pid = fork();
++  if (pid < 0) { printf("prodcons: fork failed\n"); exit(1); }
++  
++  // CRITICAL FIX: Child must map the shared memory too!
++  if (pid == 0) {
++    s = (struct pc_shared *)shm_get();
++    if ((uint64)s == 0 || (uint64)s == 0xFFFFFFFFFFFFFFFF) exit(1);
++  }
++  
++  if (pid == 0) {
++    // PRODUCER
++    for (int i = 1; i <= NUM_ITEMS; i++) {
++      while (s->count >= BUFFER_SIZE) for (volatile int j = 0; j < 1000; j++);
++      while (s->mutex == 1) for (volatile int j = 0; j < 1000; j++);
++      s->mutex = 1;
++      
++      s->buffer[s->in] = i;
++      s->in = (s->in + 1) % BUFFER_SIZE;
++      s->count++;
++      printf("Producer: produced item %d, count=%d\n", i, s->count);
++      
++      s->mutex = 0;
++      for (volatile int j = 0; j < 10000; j++);
++    }
++    printf("Producer: done.\n");
++    exit(0);
++  } else {
++    // CONSUMER
++    for (int i = 0; i < NUM_ITEMS; i++) {
++      while (s->count <= 0) for (volatile int j = 0; j < 1000; j++);
++      while (s->mutex == 1) for (volatile int j = 0; j < 1000; j++);
++      s->mutex = 1;
++      
++      int item = s->buffer[s->out];
++      s->out = (s->out + 1) % BUFFER_SIZE;
++      s->count--;
++      printf("Consumer: consumed item %d, count=%d\n", item, s->count);
++      
++      s->mutex = 0;
++      for (volatile int j = 0; j < 15000; j++);
++    }
++    wait(0);
++    printf("prodcons: final count=%d (expected 0)\n", s->count);
++    if (s->count == 0) printf("prodcons: SUCCESS!\n");
++    exit(0);
++  }
++}

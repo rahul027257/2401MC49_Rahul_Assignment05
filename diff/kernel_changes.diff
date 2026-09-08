@@ -1,0 +1,198 @@
+diff --git a/Makefile b/Makefile
+index f59a9ad..b22623d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -142,6 +142,19 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++$U/_peterson\
++$U/_prodcons\
++$U/_readwrite\
++$U/_dining\
++	$U/_srtftest\
++	$U/_hrrntest\
++	$U/_mlfqtest\
++	$U/_srtftest\
++	$U/_hrrntest\
++	$U/_mlfqtest\
++	$U/_srtftest\
++	$U/_hrrntest\
++	$U/_mlfqtest\
+ 	$U/_logstress\
+ 	$U/_forphan\
+ 	$U/_dorphan\
+diff --git a/kernel/defs.h b/kernel/defs.h
+index 0ae6896..8ceb50e 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -137,6 +137,7 @@ void            argaddr(int, uint64 *);
+ int             fetchstr(uint64, char*, int);
+ int             fetchaddr(uint64, uint64*);
+ void            syscall();
++uint64          sys_set_burst(void);
+ 
+ // trap.c
+ extern uint     ticks;
+@@ -183,4 +184,5 @@ void            virtio_disk_rw(struct buf *, int);
+ void            virtio_disk_intr(void);
+ 
+ // number of elements in fixed-size array
++uint64          sys_shm_get(void);
+ #define NELEM(x) (sizeof(x) / sizeof((x)[0]))
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 6275411..826faaf 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -211,7 +211,9 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
+ {
+   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+   uvmunmap(pagetable, TRAPFRAME, 1, 0);
++  uvmunmap(pagetable, 0x30000000, 1, 0);
+   uvmfree(pagetable, sz);
++  uvmunmap(pagetable, 0x30000000, 1, 0);
+ }
+ 
+ // Set up first user process.
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index 0cd8051..83e0665 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -95,6 +95,12 @@ extern uint64 sys_getpid(void);
+ extern uint64 sys_sbrk(void);
+ extern uint64 sys_pause(void);
+ extern uint64 sys_uptime(void);
++extern uint64 sys_shm_get(void);
++extern uint64 sys_shm_get(void);
++extern uint64 sys_shm_get(void);
++extern uint64 sys_set_burst(void);
++extern uint64 sys_set_burst(void);
++extern uint64 sys_set_burst(void);
+ extern uint64 sys_open(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_mknod(void);
+@@ -122,6 +128,7 @@ static uint64 (*syscalls[])(void) = {
+   [SYS_sbrk]    sys_sbrk,
+   [SYS_pause]   sys_pause,
+   [SYS_uptime]  sys_uptime,
++[SYS_shm_get]   sys_shm_get,
+   [SYS_open]    sys_open,
+   [SYS_write]   sys_write,
+   [SYS_mknod]   sys_mknod,
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 5a4a39f..a1b118b 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -21,3 +21,10 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_sync   22
++#define SYS_set_burst  22
++#define SYS_set_burst  22
++#define SYS_set_burst  22
++#define SYS_set_burst  22
++#define SYS_sleep 10
++#define SYS_shm_get  23
++#define SYS_shm_get  23
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index cd25557..6751889 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -109,4 +109,56 @@ sys_uptime(void)
+   xticks = ticks;
+   release(&tickslock);
+   return xticks;
++}
++   uint64
++   sys_set_burst(void)
++   {
++     int pid, bt;
++     
++     // In your version of xv6, argint returns void, so we just call it.
++     argint(0, &pid);
++     argint(1, &bt);
++
++     // Declare the proc array so this file can see it
++     extern struct proc proc[];
++     
++     struct proc *p;
++     for(p = proc; p < &proc[NPROC]; p++){
++       acquire(&p->lock);
++       if(p->pid == pid && p->state != UNUSED){
++         p->burst_time = bt;
++         p->remaining_time = bt;
++         release(&p->lock);
++         return 0;
++       }
++       release(&p->lock);
++     }
++     return -1;
++   }
++
++// Shared memory syscall for Assignment 5
++// Allocates a physical page and maps it to user space at 0x30000000
++uint64
++sys_shm_get(void)
++{
++  static char *shared_mem = 0;
++  
++  // Allocate shared page only once
++  if(shared_mem == 0){
++    shared_mem = kalloc();
++    if(shared_mem == 0) return -1;
++    memset(shared_mem, 0, PGSIZE);
++  }
++  
++  struct proc *p = myproc();
++  uint64 va = 0x30000000; // Fixed user virtual address
++  
++  // Check if already mapped (inherited after fork)
++  pte_t *pte = walk(p->pagetable, va, 0);
++  if(pte == 0 || (*pte & PTE_V) == 0){
++    if(mappages(p->pagetable, va, PGSIZE, (uint64)shared_mem, PTE_R | PTE_W | PTE_U) < 0){
++      return -1;
++    }
++  }
++  return va;
+ }
+diff --git a/user/user.h b/user/user.h
+index 29aad59..9c130d0 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -4,6 +4,8 @@ struct stat;
+ 
+ // system calls
+ int fork(void);
++int sleep(int);
++int sleep(int);
+ int exit(int) __attribute__((noreturn));
+ int wait(int *);
+ int pipe(int *);
+@@ -21,6 +23,10 @@ int mkdir(const char *);
+ int chdir(const char *);
+ int dup(int);
+ int getpid(void);
++uint64 shm_get(void);
++int set_burst(int, int);
++int set_burst(int, int);
++int set_burst(int, int);
+ char *sys_sbrk(int, int);
+ int pause(int);
+ int uptime(void);
+@@ -48,3 +54,4 @@ void printf(const char *, ...) __attribute__((format(printf, 1, 2)));
+ // umalloc.c
+ void *malloc(uint);
+ void free(void *);
++int sleep(int);
+diff --git a/user/usys.pl b/user/usys.pl
+index 4d054e8..d94ad4d 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -42,4 +42,7 @@ entry("getpid");
+ entry("sbrk");
+ entry("pause");
+ entry("uptime");
++entry("set_burst");
+ entry("sync");
++entry("sleep");
++entry("shm_get");
