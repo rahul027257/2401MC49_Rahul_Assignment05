@@ -1,0 +1,81 @@
+#include "kernel/types.h"
+#include "user/user.h"
+
+#define NUM_READERS 3
+#define NUM_WRITERS 2
+#define NUM_ITERATIONS 5
+
+struct rw_shared {
+  volatile int shared_data;
+  volatile int read_count;
+  volatile int mutex;
+  volatile int writelock;
+};
+
+void reader(int id, struct rw_shared *s) {
+  for (int i = 0; i < NUM_ITERATIONS; i++) {
+    while (s->mutex == 1) for (volatile int j = 0; j < 1000; j++);
+    s->mutex = 1;
+    s->read_count++;
+    if (s->read_count == 1) { while (s->writelock == 1) for (volatile int j = 0; j < 1000; j++); s->writelock = 1; }
+    s->mutex = 0;
+    
+    printf("Reader %d: reading data=%d, active_readers=%d\n", id, s->shared_data, s->read_count);
+    for (volatile int j = 0; j < 10000; j++);
+    
+    while (s->mutex == 1) for (volatile int j = 0; j < 1000; j++);
+    s->mutex = 1;
+    s->read_count--;
+    if (s->read_count == 0) s->writelock = 0;
+    s->mutex = 0;
+    for (volatile int j = 0; j < 5000; j++);
+  }
+  printf("Reader %d: finished\n", id);
+  exit(0);
+}
+
+void writer(int id, struct rw_shared *s) {
+  for (int i = 0; i < NUM_ITERATIONS; i++) {
+    while (s->writelock == 1) for (volatile int j = 0; j < 1000; j++);
+    s->writelock = 1;
+    s->shared_data++;
+    printf("Writer %d: wrote new data=%d\n", id, s->shared_data);
+    for (volatile int j = 0; j < 20000; j++);
+    s->writelock = 0;
+    for (volatile int j = 0; j < 10000; j++);
+  }
+  printf("Writer %d: finished\n", id);
+  exit(0);
+}
+
+int main(int argc, char *argv[]) {
+  printf("readwrite: starting (readers=%d, writers=%d)\n", NUM_READERS, NUM_WRITERS);
+  
+  struct rw_shared *s = (struct rw_shared *)shm_get();
+  if ((uint64)s == 0 || (uint64)s == 0xFFFFFFFFFFFFFFFF) { printf("readwrite: failed to get shared memory\n"); exit(1); }
+  
+  s->shared_data = 0; s->read_count = 0; s->mutex = 0; s->writelock = 0;
+  
+  for (int i = 0; i < NUM_READERS; i++) {
+    int pid = fork();
+    if (pid == 0) {
+      s = (struct rw_shared *)shm_get(); // Map for child
+      if ((uint64)s == 0 || (uint64)s == 0xFFFFFFFFFFFFFFFF) exit(1);
+      reader(i, s);
+    }
+  }
+  
+  for (int i = 0; i < NUM_WRITERS; i++) {
+    int pid = fork();
+    if (pid == 0) {
+      s = (struct rw_shared *)shm_get(); // Map for child
+      if ((uint64)s == 0 || (uint64)s == 0xFFFFFFFFFFFFFFFF) exit(1);
+      writer(i, s);
+    }
+  }
+  
+  for (int i = 0; i < NUM_READERS + NUM_WRITERS; i++) wait(0);
+  printf("readwrite: final data=%d (expected %d)\n", s->shared_data, NUM_WRITERS * NUM_ITERATIONS);
+  if (s->shared_data == NUM_WRITERS * NUM_ITERATIONS) printf("readwrite: SUCCESS!\n");
+  exit(0);
+}

@@ -1,0 +1,70 @@
+#include "kernel/types.h"
+#include "user/user.h"
+
+// CRITICAL: volatile tells the compiler NOT to cache these in registers
+struct peterson_shared {
+  volatile int flag[2];
+  volatile int turn;
+  volatile int shared_counter;
+};
+
+int main(int argc, char *argv[]) {
+  printf("peterson: starting\n");
+  
+  // Parent gets shared memory first
+  struct peterson_shared *s = (struct peterson_shared *)shm_get();
+  if ((uint64)s == 0 || (uint64)s == 0xFFFFFFFFFFFFFFFF) {
+    printf("peterson: failed to get shared memory\n");
+    exit(1);
+  }
+  
+  int pid = fork();
+  if (pid < 0) {
+    printf("peterson: fork failed\n");
+    exit(1);
+  }
+  
+  int id = (pid == 0) ? 1 : 0; // Child is 1, Parent is 0
+  int other = 1 - id;
+  
+  // Child must also map the shared memory into its own page table
+  if (id == 1) {
+    s = (struct peterson_shared *)shm_get();
+    if ((uint64)s == 0 || (uint64)s == 0xFFFFFFFFFFFFFFFF) {
+      printf("peterson: child failed to get shared memory\n");
+      exit(1);
+    }
+  }
+  
+  for (int i = 0; i < 10; i++) {
+    // Entry section
+    s->flag[id] = 1;
+    s->turn = other;
+    
+    // Busy wait. 'volatile' ensures the compiler re-reads memory every time.
+    while (s->flag[other] == 1 && s->turn == other) {
+      for (volatile int j = 0; j < 10000; j++); 
+    }
+    
+    // Critical Section
+    int temp = s->shared_counter;
+    s->shared_counter = temp + 1;
+    printf("Process %d in CS, counter=%d\n", id, s->shared_counter);
+    
+    // Exit section
+    s->flag[id] = 0;
+    
+    // Remainder section
+    for (volatile int j = 0; j < 20000; j++);
+  }
+  
+  if (id == 0) {
+    wait(0); // Parent waits for child
+    printf("peterson: final counter=%d (expected 20)\n", s->shared_counter);
+    if (s->shared_counter == 20)
+      printf("peterson: SUCCESS - mutual exclusion works!\n");
+    else
+      printf("peterson: FAILURE - counter mismatch!\n");
+  }
+  exit(0);
+}
